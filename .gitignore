@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+
+# 本地配置与缓存（含 token，绝不入库）
+.gitlab_clone_gui.json
+.gitlab_tree_cache.json
+
+# 测试/临时目录
+_clone_test/
+_e2e/
+download/
+gitlab_download/
