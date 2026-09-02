@@ -1287,17 +1287,12 @@ def resource_path(name: str) -> str:
 
 def set_window_icon(root: tk.Tk):
     """给主窗口设置标题栏图标（开发与 exe 打包环境都生效）。"""
-    ico = resource_path("icon.ico")
-    if not os.path.exists(ico):
-        return
     try:
-        root.iconbitmap(ico)   # Windows 原生支持 ico
+        ico = resource_path("icon.ico")
+        if os.path.exists(ico):
+            root.iconbitmap(ico)   # Windows 原生支持 ico，无第三方依赖
     except Exception:
-        try:
-            from PIL import Image, ImageTk
-            root.iconphoto(True, ImageTk.PhotoImage(Image.open(ico)))
-        except Exception:
-            pass
+        pass
 
 
 def main():
