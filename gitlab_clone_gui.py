@@ -326,6 +326,7 @@ class App:
         self.checked = set() # 已勾选的 tree iid
         self._prefetch = {}  # group_id -> (subs, projects) 预取缓存
         self._full_tree = False   # True=整棵树已建好(全树缓存模式)
+        self._out_root = os.getcwd()  # 日志相对路径基准, 下载开始时更新
         self.log_queue = []
         self._callback_srv = None
         self._callback_state = None
@@ -1117,7 +1118,18 @@ class App:
         self._monitor_tick()
 
     def _stop_monitor(self):
+        """停止监视并做收尾刷新：清掉'正在克隆'的残留显示。"""
+        was_on = self._monitor_on
         self._monitor_on = False
+        if was_on:
+            try:
+                self.lbl_prog_run.config(text="已结束（下载流程完成，监视已停止）")
+                self.txt_transferring.configure(state="normal")
+                self.txt_transferring.delete("1.0", "end")
+                self.txt_transferring.insert("end", "  ✓ 下载已结束，当前没有传输中的仓库")
+                self.txt_transferring.configure(state="disabled")
+            except Exception:
+                pass
 
     def _monitor_tick(self):
         if not self._monitor_on:
@@ -1192,6 +1204,7 @@ class App:
             messagebox.showinfo("提示", "请先选择下载根目录")
             return
         os.makedirs(out, exist_ok=True)
+        self._out_root = os.path.abspath(out)   # 日志相对路径的基准
         checked_iids = list(self.checked)
         self.btn_dl.config(state="disabled")
         self.btn_login.config(state="disabled")
@@ -1223,7 +1236,10 @@ class App:
                 continue
             self.log(f"🔍 正在扫描: {node['path']} …")
             try:
-                self._collect_from_node(iid, out_root, seen, jobs)
+                # 先拼好该勾选项的父级中文链（散勾项目也会归位到父群组下）
+                prefix = self._chain_for_node(iid)
+                base = os.path.join(out_root, prefix) if prefix else out_root
+                self._collect_from_node(iid, base, seen, jobs)
             except Exception as e:
                 self.log(f"⚠️ 群组 {node.get('path','')} 加载失败：{e}")
         total = len(jobs)
@@ -1275,11 +1291,31 @@ class App:
             self._collect_group(client, s["id"], projects)
 
     # ---------- 中文目录链收集 ----------
+    def _chain_for_node(self, iid) -> str:
+        """从某节点的父群组向上回溯，返回其中文目录链（不含下载根目录，
+        也不含节点自身——自身由调用方拼接）。
+
+        勾选的是散项目节点时，也要放进 '武安市安康医院/检验系统' 这样
+        的父级目录里，而不是平铺在下载根目录。
+        """
+        parts = []
+        node = self.nodes.get(iid)
+        if not node:
+            return ""
+        cur = node.get("parent")
+        while cur and cur in self.nodes:
+            pnode = self.nodes[cur]
+            if pnode["kind"] == "group":
+                parts.insert(0, sanitize(pnode["display"]))
+            cur = pnode.get("parent")
+        return os.sep.join(parts) if parts else ""
+
     def _collect_from_node(self, iid, dir_chain, seen, jobs):
         """从树的某个节点向下收集项目，目标目录用中文显示名链。
 
-        优先走树（树本来就是中文名，且常已加载）；
-        树没加载的分支用磁盘缓存（同样含中文名）；都没有才回退英文路径。
+        dir_chain 必须已包含本节点的父级链（由调用方拼好）：
+        下载循环对每个勾选项先拼 _chain_for_node，再进入本方法；
+        递归时 here 逐级追加，不再重复拼父链。
         """
         node = self.nodes.get(iid)
         if not node:
@@ -1327,36 +1363,61 @@ class App:
                                          os.path.join(dir_chain, sanitize(s["name"])),
                                          seen, jobs)
 
+    def _disp_path(self, target: str) -> str:
+        """日志显示用路径：相对下载根目录；跨盘符时显示完整路径。
+
+        os.path.relpath 跨盘符会抛 ValueError，必须避开。
+        """
+        try:
+            return os.path.relpath(target, self._out_root)
+        except ValueError:
+            return target
+
     def _clone_one(self, job):
         target, proj = job
         name = proj["name"]
         os.makedirs(target, exist_ok=True)
         if os.path.isdir(os.path.join(target, ".git")):
-            return ("skip", os.path.relpath(target), name)
+            return ("skip", self._disp_path(target), name)
         if os.listdir(target):
-            return ("skip", os.path.relpath(target), name)
+            return ("skip", self._disp_path(target), name)
         self.log(f"⬇️ 开始克隆 {name} ({proj['path_with_namespace']})")
         url = self.client.build_clone_url(proj)
         env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
         host = urllib.parse.urlsplit(url).netloc.split("@")[-1]
+        # 注意: 不再设置 lowSpeedLimit/lowSpeedTime —— 慢服务器+大仓库会被误杀
         git_cfg = ["-c", "credential.helper=",
                    "-c", f"credential.http://{host}.allowUnsafeRemote=true",
-                   "-c", f"credential.https://{host}.allowUnsafeRemote=true",
-                   "-c", "http.lowSpeedLimit=1", "-c", "http.lowSpeedTime=10"]
-        try:
-            subprocess.run(["git"] + git_cfg + ["clone", "--", url, target],
-                           check=True, capture_output=True, text=True,
-                           timeout=1800, env=env, creationflags=NO_WINDOW)
-            # 干净的 origin 指向公网地址（去掉内嵌 token 和 oauth2 用户名）
-            clean = f"{self.client.base}{urllib.parse.urlsplit(url).path}"
-            subprocess.run(["git", "-C", target, "remote", "set-url",
-                            "origin", clean],
-                           check=True, capture_output=True,
-                           creationflags=NO_WINDOW)
-            return ("cloned", os.path.relpath(target), name)
-        except subprocess.CalledProcessError as e:
-            detail = (e.stderr or e.stdout or "").strip().splitlines()
-            return ("failed", os.path.relpath(target), detail[-1] if detail else "git error")
+                   "-c", f"credential.https://{host}.allowUnsafeRemote=true"]
+        # 失败自动重试 2 次（慢服务器/网络抖动常态）
+        last_err = "git error"
+        for attempt in range(3):
+            try:
+                subprocess.run(["git"] + git_cfg + ["clone", "--", url, target],
+                               check=True, capture_output=True, text=True,
+                               timeout=1800, env=env, creationflags=NO_WINDOW)
+                # 克隆成功后清理可能残留的半成品再校验
+                if not os.path.isdir(os.path.join(target, ".git")):
+                    raise RuntimeError("克隆完成但缺少 .git，可能是半成品")
+                # 干净的 origin 指向公网地址（去掉内嵌 token 和 oauth2 用户名）
+                clean = f"{self.client.base}{urllib.parse.urlsplit(url).path}"
+                subprocess.run(["git", "-C", target, "remote", "set-url",
+                                "origin", clean],
+                               check=True, capture_output=True,
+                               creationflags=NO_WINDOW)
+                return ("cloned", self._disp_path(target), name)
+            except subprocess.CalledProcessError as e:
+                lines = (e.stderr or e.stdout or "").strip().splitlines()
+                last_err = lines[-1] if lines else "git error"
+            except Exception as e:
+                last_err = str(e)
+            # 失败清理半成品目录，重试从干净状态开始
+            if attempt < 2:
+                self.log(f"⚠️ {name} 克隆失败（{last_err}），第 {attempt + 2} 次尝试…")
+                import shutil
+                shutil.rmtree(target, ignore_errors=True)
+                os.makedirs(target, exist_ok=True)
+        return ("failed", self._disp_path(target), last_err)
 
 
 def resource_path(name: str) -> str:
