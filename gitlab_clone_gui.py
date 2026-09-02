@@ -34,6 +34,8 @@ _INVALID = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 CHECKED, UNCHECKED, HALF = "☑ ", "☐ ", "▣ "
 FOLDER, REPO = "📁", "📄"
+# Windows 下隐藏子进程控制台黑框（exe 无控制台时 git/powershell 会各弹一个）
+NO_WINDOW = 0x08000000 if os.name == "nt" else 0   # CREATE_NO_WINDOW
 
 
 def sanitize(name: str) -> str:
@@ -112,7 +114,7 @@ def disk_usage_gb(out_root: str) -> float:
              f"(Get-ChildItem -Recurse -Force '{out_root}' | "
              f"Measure-Object -Property Length -Sum).Sum / 1GB"],
             capture_output=True, text=True, timeout=90, encoding="utf-8",
-            errors="replace")
+            errors="replace", creationflags=NO_WINDOW)
         return float((r.stdout or "0").strip() or 0)
     except Exception:
         return 0.0
@@ -127,7 +129,7 @@ def transferring_repos() -> list:
              "Get-CimInstance Win32_Process -Filter \"name='git.exe'\" | "
              "Select-Object -ExpandProperty CommandLine"],
             capture_output=True, text=True, timeout=30, encoding="utf-8",
-            errors="replace")
+            errors="replace", creationflags=NO_WINDOW)
         repos = []
         for line in (r.stdout or "").splitlines():
             if "remote-http" in line and ".git" in line:
@@ -1267,12 +1269,13 @@ class App:
         try:
             subprocess.run(["git"] + git_cfg + ["clone", "--", url, target],
                            check=True, capture_output=True, text=True,
-                           timeout=1800, env=env)
+                           timeout=1800, env=env, creationflags=NO_WINDOW)
             # 干净的 origin 指向公网地址（去掉内嵌 token 和 oauth2 用户名）
             clean = f"{self.client.base}{urllib.parse.urlsplit(url).path}"
             subprocess.run(["git", "-C", target, "remote", "set-url",
                             "origin", clean],
-                           check=True, capture_output=True)
+                           check=True, capture_output=True,
+                           creationflags=NO_WINDOW)
             return ("cloned", os.path.relpath(target), name)
         except subprocess.CalledProcessError as e:
             detail = (e.stderr or e.stdout or "").strip().splitlines()
