@@ -39,7 +39,9 @@ NO_WINDOW = 0x08000000 if os.name == "nt" else 0   # CREATE_NO_WINDOW
 
 
 def sanitize(name: str) -> str:
-    return _INVALID.sub("_", name).strip(" .") or "_"
+    """文件夹名安全化：替换 Windows 非法字符、去首尾空白、超长截断。"""
+    cleaned = _INVALID.sub("_", name).strip(" .") or "_"
+    return cleaned[:80]   # Windows 单级目录名安全上限（默认 255，留足余量）
 
 
 # ---------- 本地 OAuth 回调服务器 ----------
@@ -808,6 +810,7 @@ class App:
                                              values=(p["http_url_to_repo"], ""))
                             self.nodes[p_iid] = {"kind": "project", "id": p["id"],
                                                  "path": p["path_with_namespace"],
+                                                 "display": p["name"],
                                                  "proj": p, "parent": giid}
                             if parent_checked:
                                 self.checked.add(p_iid)
@@ -845,6 +848,7 @@ class App:
                                          values=(p["http_url_to_repo"], ""))
                         self.nodes[p_iid] = {"kind": "project", "id": p["id"],
                                              "path": p["path_with_namespace"],
+                                             "display": p["name"],
                                              "proj": p, "parent": giid}
                     build(giid, subs)
                 else:
@@ -875,7 +879,7 @@ class App:
         self.tree.insert(parent_iid, "end", iid=iid,
                          text=f"{mark}{FOLDER} {g['name']}")
         self.nodes[iid] = {"kind": "group", "id": group_id, "path": path,
-                           "parent": parent_iid or None}
+                           "display": g["name"], "parent": parent_iid or None}
         if parent_checked:
             self.checked.add(iid)
         if lazy:
@@ -911,6 +915,7 @@ class App:
                                          values=(p["http_url_to_repo"], ""))
                         self.nodes[p_iid] = {"kind": "project", "id": p["id"],
                                              "path": p["path_with_namespace"],
+                                             "display": p["name"],
                                              "proj": p, "parent": iid}
                         if mark == CHECKED:
                             self.checked.add(p_iid)
@@ -972,6 +977,7 @@ class App:
                     mark = CHECKED if node_iid in self.checked else UNCHECKED
                     self.nodes[node_iid] = {"kind": "project", "id": obj["id"],
                                              "path": obj["path_with_namespace"],
+                                             "display": obj["name"],
                                              "proj": obj, "parent": iid}
                     if mark == CHECKED:
                         self.checked.add(node_iid)
@@ -1208,24 +1214,18 @@ class App:
                 self.set_status(f"下载异常: {e}")])
 
     def _do_download_inner(self, checked_iids, out_root):
-        # 收集勾选范围内的所有项目（按 id 去重）
-        seen, projects = set(), []
+        # 收集勾选范围内的所有项目（按 id 去重），并记录中文目录链
+        seen = set()
+        jobs = []          # (目标路径, project dict)
         for iid in checked_iids:
             node = self.nodes.get(iid)
             if not node:
                 continue
-            self.log(f"🔍 正在扫描群组: {node['path']} …")
+            self.log(f"🔍 正在扫描: {node['path']} …")
             try:
-                if node["kind"] == "group":
-                    self._collect_group(self.client, node["id"], projects)
-                else:
-                    projects.append(node["proj"])
+                self._collect_from_node(iid, out_root, seen, jobs)
             except Exception as e:
                 self.log(f"⚠️ 群组 {node.get('path','')} 加载失败：{e}")
-
-        uniq = [p for p in projects if not (p["id"] in seen or seen.add(p["id"]))]
-        jobs = [(os.path.join(out_root, *p["path_with_namespace"].split("/")), p)
-                for p in uniq]
         total = len(jobs)
         self.log(f"共收集 {total} 个项目，开始克隆…\n")
         done = ok = skip = fail = 0
@@ -1273,6 +1273,59 @@ class App:
         projects.extend(direct)
         for s in subs:
             self._collect_group(client, s["id"], projects)
+
+    # ---------- 中文目录链收集 ----------
+    def _collect_from_node(self, iid, dir_chain, seen, jobs):
+        """从树的某个节点向下收集项目，目标目录用中文显示名链。
+
+        优先走树（树本来就是中文名，且常已加载）；
+        树没加载的分支用磁盘缓存（同样含中文名）；都没有才回退英文路径。
+        """
+        node = self.nodes.get(iid)
+        if not node:
+            return
+        # 本级目录名：群组取显示名(中文)；项目用项目名
+        here = os.path.join(dir_chain, sanitize(node["display"]))
+
+        if node["kind"] == "project":
+            if node["id"] not in seen:
+                seen.add(node["id"])
+                jobs.append((here, node["proj"]))
+            return
+
+        # 群组：先收直属项目，再递归子群组
+        kids = [c for c in self.tree.get_children(iid) if c in self.nodes]
+        if kids:
+            for c in kids:
+                self._collect_from_node(c, here, seen, jobs)
+        else:
+            # 树上未加载：用磁盘缓存补（缓存含每个群组的 name 与子级）
+            self._collect_from_cache(node["id"], here, seen, jobs)
+
+    def _collect_from_cache(self, gid, dir_chain, seen, jobs):
+        cache = load_tree_cache().get(self.client.base, {})
+        entry = cache.get("children", {}).get(str(gid))
+        if entry:
+            subs, projs = entry
+            for p in projs:
+                if p["id"] not in seen:
+                    seen.add(p["id"])
+                    jobs.append((os.path.join(dir_chain, sanitize(p["name"])), p))
+            for s in subs:
+                self._collect_from_cache(s["id"],
+                                         os.path.join(dir_chain, sanitize(s["name"])),
+                                         seen, jobs)
+        else:
+            # 缓存也没有：实时拉 API（API 返回的 name 即中文名）
+            subs, projs = self.client.group_children(gid)
+            for p in projs:
+                if p["id"] not in seen:
+                    seen.add(p["id"])
+                    jobs.append((os.path.join(dir_chain, sanitize(p["name"])), p))
+            for s in subs:
+                self._collect_from_cache(s["id"],
+                                         os.path.join(dir_chain, sanitize(s["name"])),
+                                         seen, jobs)
 
     def _clone_one(self, job):
         target, proj = job
