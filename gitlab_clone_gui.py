@@ -1279,12 +1279,34 @@ class App:
             return ("failed", os.path.relpath(target), detail[-1] if detail else "git error")
 
 
+def resource_path(name: str) -> str:
+    """兼容 PyInstaller 打包: 开发时取脚本目录, 打包后取 exe 解压目录。"""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, name)
+
+
+def set_window_icon(root: tk.Tk):
+    """给主窗口设置标题栏图标（开发与 exe 打包环境都生效）。"""
+    ico = resource_path("icon.ico")
+    if not os.path.exists(ico):
+        return
+    try:
+        root.iconbitmap(ico)   # Windows 原生支持 ico
+    except Exception:
+        try:
+            from PIL import Image, ImageTk
+            root.iconphoto(True, ImageTk.PhotoImage(Image.open(ico)))
+        except Exception:
+            pass
+
+
 def main():
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
     root = tk.Tk()
+    set_window_icon(root)
     App(root)
     root.mainloop()
 
