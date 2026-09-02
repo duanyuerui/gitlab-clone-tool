@@ -1104,6 +1104,7 @@ class App:
         """下载期间每 5 秒刷新进度页签。统计在后台线程，绝不阻塞界面。"""
         self._monitor_on = True
         self._monitor_busy = False
+        self._idle_rounds = 0
         self._monitor_prev = {"done": 0, "size": 0.0}
         self._monitor_root = out_root
         self.notebook.select(0)  # 自动切到进度页
@@ -1132,6 +1133,17 @@ class App:
                     if not self._monitor_on:
                         return
                     try:
+                        # 自愈保险：连续 3 轮（约15秒）既没有 git 在传输、
+                        # 完成数也不增长 —— 下载必然已结束，自动停监视器，
+                        # 防止下载线程异常死亡后监视器无限弹子进程窗口。
+                        idle = (not repos) and (done <= prev["done"])
+                        self._idle_rounds = getattr(self, "_idle_rounds", 0) + 1 if idle else 0
+                        if self._idle_rounds >= 3:
+                            self._monitor_on = False
+                            self.lbl_prog_run.config(
+                                text="已结束（监视自动停止：无传输且进度不再变化）")
+                            return
+
                         self.lbl_prog_done.config(
                             text=f"已完成: {done} 个（较上次 +{max(0, done - prev['done'])}）")
                         self.lbl_prog_size.config(
@@ -1184,6 +1196,18 @@ class App:
                          daemon=True).start()
 
     def _do_download(self, checked_iids, out_root):
+        try:
+            self._do_download_inner(checked_iids, out_root)
+        except Exception as e:
+            self.log(f"❌ 下载流程异常终止：{e}")
+            self.root.after(0, lambda: [
+                self._stop_monitor(),
+                self.btn_dl.config(state="normal"),
+                self.btn_login.config(state="normal"),
+                self.btn_open.config(state="normal"),
+                self.set_status(f"下载异常: {e}")])
+
+    def _do_download_inner(self, checked_iids, out_root):
         # 收集勾选范围内的所有项目（按 id 去重）
         seen, projects = set(), []
         for iid in checked_iids:
