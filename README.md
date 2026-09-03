@@ -29,6 +29,22 @@ python3 gitlab_clone_gui.py   # Linux/macOS
 
 另有命令行版本 `gitlab_group_clone.py`，适合脚本化/定时任务场景。
 
+### 获取 Personal Access Token（教程）
+
+Token 是程序访问你 GitLab 群组数据的钥匙，在 GitLab 网页上创建，步骤如下：
+
+1. 浏览器登录你的极狐 GitLab 实例（和填服务器地址用的是同一个地址）
+2. 点右上角头像 → **偏好设置**（Preferences）
+3. 左侧菜单找 **访问令牌**（Access Tokens）
+4. 填写令牌名称（随意，如 `clone-tool`）、选择过期时间
+5. **勾选权限**（重要，缺了会报权限不足）：`api`（含读写仓库权限）和 `read_repository`
+6. 点「创建个人访问令牌」（Create personal access token）
+7. **立即复制**页面顶部显示的一串 `glpat-` 开头的令牌——它只显示这一次，关掉页面就再也看不到了
+8. 回到本工具，点「粘贴Token」把复制的令牌粘进去
+
+> 注意：创建后 GitLab 只展示一次该令牌，务必当场复制；若忘记，删掉重建一个即可。
+> 极狐 GitLab（`gitlab.cn`）与 GitLab.com 的入口相同，均为 头像 → 偏好设置 → 访问令牌。
+
 ## 命令行版用法
 
 ```bash
