@@ -1115,6 +1115,7 @@ class App:
         self._monitor_prev = {"done": 0, "size": 0.0}
         self._monitor_root = out_root
         self.notebook.select(0)  # 自动切到进度页
+        self.progress.config(value=0)  # 新一次下载从零开始
         self._monitor_tick()
 
     def _stop_monitor(self):
@@ -1270,10 +1271,11 @@ class App:
                 else:
                     fail += 1
                     self.log(f"[失败 {done}/{total}] {rel}  ({detail})")
-                self.root.after(0, lambda d=done, t=total: self.progress.config(value=min(d, t)))
+                self.root.after(0, lambda d=done, t=total: self.progress.config(
+                    value=(100 * d // t if t else 0)))
         stop_beat.set()
 
-        self.root.after(0, lambda: self.progress.config(value=total))
+        self.root.after(0, lambda t=total: self.progress.config(value=(100 if t else 0)))
         self.log(f"\n✅ 完成：克隆 {ok}，跳过 {skip}，失败 {fail}，共 {total} 个项目")
         if fail:
             self.log("提示：失败通常是权限不足或项目为空，可展开对应群组核对。")
