@@ -11,3 +11,8 @@ _clone_test/
 _e2e/
 download/
 gitlab_download/
+
+# 构建产物
+build/
+dist/
+*.spec
